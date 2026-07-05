@@ -450,7 +450,6 @@ void Context::ParseSpoiler(const char* spoilerFileName) {
 void Context::ParseArchipelago() {
     mSeedGenerated = false;
     mSpoilerLoaded = false;
-    mEntranceShuffler->UnshuffleAllEntrances();
     mDungeons->ResetAllDungeons();
     mTrials->RemoveAllTrials();
 
@@ -461,6 +460,10 @@ void Context::ParseArchipelago() {
     Random_Init(GetSeed());
     ParseArchipelagoItemsLocations(apClient.GetScoutedItems());
     ParseArchipelagoOptions();
+    // Must run after options are parsed; entrance parsing/logic reads the shuffle settings.
+    // ParseArchipelagoEntrances() unshuffles first, so vanilla entrances are preserved when
+    // ER is off or the apworld doesn't send an "entrances" array.
+    ParseArchipelagoEntrances();
     ParseArchipelagoTricks();
     ParseArchipelagoExcludedLocations();
     ParseArchipelagoHints();
@@ -858,29 +861,50 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_KEYRINGS_BOTTOM_OF_THE_WELL].Set(slotData["bottom_of_the_well_key_ring"]);
     mOptions[RSK_KEYRINGS_GTG].Set(slotData["gerudo_training_ground_key_ring"]);
     mOptions[RSK_KEYRINGS_GANONS_CASTLE].Set(slotData["ganons_castle_key_ring"]);
-    mOptions[RSK_SHUFFLE_ENTRANCES].Set(0);
-    mOptions[RSK_SHUFFLE_DUNGEON_ENTRANCES].Set(0);
-    mOptions[RSK_SHUFFLE_OVERWORLD_ENTRANCES].Set(0);
-    mOptions[RSK_SHUFFLE_INTERIOR_ENTRANCES].Set(0);
-    mOptions[RSK_SHUFFLE_THIEVES_HIDEOUT_ENTRANCES].Set(0);
-    mOptions[RSK_SHUFFLE_GROTTO_ENTRANCES].Set(0);
-    mOptions[RSK_SHUFFLE_OWL_DROPS].Set(0);
-    mOptions[RSK_SHUFFLE_WARP_SONGS].Set(0);
-    mOptions[RSK_SHUFFLE_OVERWORLD_SPAWNS].Set(0);
-    mOptions[RSK_MIXED_ENTRANCE_POOLS].Set(0);
-    mOptions[RSK_MIX_DUNGEON_ENTRANCES].Set(0);
-    mOptions[RSK_MIX_BOSS_ENTRANCES].Set(0);
-    mOptions[RSK_MIX_OVERWORLD_ENTRANCES].Set(0);
-    mOptions[RSK_MIX_INTERIOR_ENTRANCES].Set(0);
-    mOptions[RSK_MIX_THIEVES_HIDEOUT_ENTRANCES].Set(0);
-    mOptions[RSK_MIX_GROTTO_ENTRANCES].Set(0);
-    mOptions[RSK_DECOUPLED_ENTRANCES].Set(0);
+    // RSK_SHUFFLE_ENTRANCES is the aggregate "any entrance pool is shuffled" flag. It is NOT a
+    // standalone slot-data setting; normally Settings::FinalizeSettings() derives it from the
+    // individual pool options. AP skips FinalizeSettings, so we derive it ourselves below after
+    // all the pool options have been parsed.
+    // Drives logic, the in-game entrance tracker, and hint text. Guarded read so an older
+    // apworld that omits the key falls back to Off (0) instead of throwing. The actual
+    // entrance connections are parsed separately in ParseArchipelagoEntrances().
+    mOptions[RSK_SHUFFLE_DUNGEON_ENTRANCES].Set(slotData.value("shuffle_dungeon_entrances", 0));
+    mOptions[RSK_SHUFFLE_OVERWORLD_ENTRANCES].Set(slotData.value("shuffle_overworld_entrances", 0));
+    mOptions[RSK_SHUFFLE_INTERIOR_ENTRANCES].Set(slotData.value("shuffle_interior_entrances", 0));
+    mOptions[RSK_SHUFFLE_THIEVES_HIDEOUT_ENTRANCES].Set(slotData.value("shuffle_thieves_hideout_entrances", 0));
+    mOptions[RSK_SHUFFLE_GROTTO_ENTRANCES].Set(slotData.value("shuffle_grotto_entrances", 0));
+    mOptions[RSK_SHUFFLE_OWL_DROPS].Set(slotData.value("shuffle_owl_drops", 0));
+    mOptions[RSK_SHUFFLE_WARP_SONGS].Set(slotData.value("shuffle_warp_songs", 0));
+    mOptions[RSK_SHUFFLE_OVERWORLD_SPAWNS].Set(slotData.value("shuffle_overworld_spawns", 0));
+    mOptions[RSK_MIXED_ENTRANCE_POOLS].Set(slotData.value("mixed_entrance_pools", 0));
+    mOptions[RSK_MIX_DUNGEON_ENTRANCES].Set(slotData.value("mix_dungeon_entrances", 0));
+    mOptions[RSK_MIX_BOSS_ENTRANCES].Set(slotData.value("mix_boss_entrances", 0));
+    mOptions[RSK_MIX_OVERWORLD_ENTRANCES].Set(slotData.value("mix_overworld_entrances", 0));
+    mOptions[RSK_MIX_INTERIOR_ENTRANCES].Set(slotData.value("mix_interior_entrances", 0));
+    mOptions[RSK_MIX_THIEVES_HIDEOUT_ENTRANCES].Set(slotData.value("mix_thieves_hideout_entrances", 0));
+    mOptions[RSK_MIX_GROTTO_ENTRANCES].Set(slotData.value("mix_grotto_entrances", 0));
+    mOptions[RSK_DECOUPLED_ENTRANCES].Set(slotData.value("decouple_entrances", 0));
+    mOptions[RSK_SHUFFLE_GANONS_TOWER_ENTRANCE].Set(slotData.value("shuffle_ganons_tower", 0));
     mOptions[RSK_STARTING_SKULLTULA_TOKEN].Set(0);
     uint8_t slotDataStartingHearts = slotData["starting_hearts"];
     mOptions[RSK_STARTING_HEARTS].Set(slotDataStartingHearts - 1);
     mOptions[RSK_DAMAGE_MULTIPLIER].Set(0);
     mOptions[RSK_ALL_LOCATIONS_REACHABLE].Set(0);
-    mOptions[RSK_SHUFFLE_BOSS_ENTRANCES].Set(0);
+    mOptions[RSK_SHUFFLE_BOSS_ENTRANCES].Set(slotData.value("shuffle_boss_entrances", 0));
+    // Derive the aggregate RSK_SHUFFLE_ENTRANCES flag from the individual pools, mirroring
+    // Settings::FinalizeSettings() (settings.cpp). The entrance tracker and many runtime hooks
+    // gate on this master flag, so it must be set or none of them activate under Archipelago.
+    if (mOptions[RSK_SHUFFLE_DUNGEON_ENTRANCES].IsNot(RO_DUNGEON_ENTRANCE_SHUFFLE_OFF) ||
+        mOptions[RSK_SHUFFLE_BOSS_ENTRANCES].IsNot(RO_BOSS_ROOM_ENTRANCE_SHUFFLE_OFF) ||
+        mOptions[RSK_SHUFFLE_OVERWORLD_ENTRANCES] ||
+        mOptions[RSK_SHUFFLE_INTERIOR_ENTRANCES].IsNot(RO_INTERIOR_ENTRANCE_SHUFFLE_OFF) ||
+        mOptions[RSK_SHUFFLE_THIEVES_HIDEOUT_ENTRANCES] || mOptions[RSK_SHUFFLE_GROTTO_ENTRANCES] ||
+        mOptions[RSK_SHUFFLE_OWL_DROPS] || mOptions[RSK_SHUFFLE_WARP_SONGS] ||
+        mOptions[RSK_SHUFFLE_OVERWORLD_SPAWNS]) {
+        mOptions[RSK_SHUFFLE_ENTRANCES].Set(RO_GENERIC_ON);
+    } else {
+        mOptions[RSK_SHUFFLE_ENTRANCES].Set(RO_GENERIC_OFF);
+    }
     mOptions[RSK_SHUFFLE_100_GS_REWARD].Set(slotData["shuffle_100_gs_reward"]);
     mOptions[RSK_TRIFORCE_HUNT].Set(slotData["triforce_hunt"]);
     // For some reason, ship adds 1 after the option is parsed in normal rando, so we subtract 1 here.
@@ -914,6 +938,24 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_LOCK_OVERWORLD_DOORS].Set(slotData["lock_overworld_doors"]);
     mOptions[RSK_SHUFFLE_GRASS].Set(slotData["shuffle_grass"]);
     mOptions[RSK_ROCS_FEATHER].Set(slotData["rocs_feather"]);
+}
+
+// The AP twin of EntranceShuffler::ParseJson(): instead of reading the finished entrance pairs
+// from a spoiler file, it reads them from the "entrances" array in slot data and feeds them into
+// the same entrance-shuffle engine. Must be called after ParseArchipelagoOptions() so the shuffle
+// settings (e.g. RSK_SHUFFLE_DUNGEON_ENTRANCES) are already applied.
+void Context::ParseArchipelagoEntrances() {
+    auto entranceShuffler = GetEntranceShuffler();
+    nlohmann::json slotData = ArchipelagoClient::GetInstance().GetSlotData();
+
+    // Older apworld / ER off -> leave entrances vanilla.
+    if (!slotData.contains("entrances")) {
+        entranceShuffler->UnshuffleAllEntrances();
+        return;
+    }
+
+    // Reuses the exact same parse + apply path as spoiler loading (ParseEntrances unshuffles first).
+    entranceShuffler->ParseEntrances(slotData["entrances"]);
 }
 
 void Context::ParseArchipelagoTricks() {

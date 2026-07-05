@@ -137,6 +137,9 @@ class EntranceShuffler {
     void CreateEntranceOverrides();
     void UnshuffleAllEntrances();
     void ParseJson(nlohmann::json spoilerFileJson);
+    // Parses an array of entrance-override objects (same format as spoilerFileJson["entrances"])
+    // into entranceOverrides and applies them. Shared by spoiler loading and Archipelago.
+    void ParseEntrances(nlohmann::json entrancesJson);
     void ApplyEntranceOverrides();
 
     static const Entrance* GetEntranceByIndex(int16_t index);

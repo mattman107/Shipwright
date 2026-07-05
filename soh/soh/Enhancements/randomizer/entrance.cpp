@@ -1680,9 +1680,12 @@ void EntranceShuffler::UnshuffleAllEntrances() {
 }
 
 void EntranceShuffler::ParseJson(nlohmann::json spoilerFileJson) {
+    ParseEntrances(spoilerFileJson["entrances"]);
+}
+
+void EntranceShuffler::ParseEntrances(nlohmann::json entrancesJson) {
     UnshuffleAllEntrances();
     try {
-        nlohmann::json entrancesJson = spoilerFileJson["entrances"];
         size_t i = 0;
         for (auto it = entrancesJson.begin(); it != entrancesJson.end() && i < entranceOverrides.size(); ++it, i++) {
             nlohmann::json entranceJson = *it;
@@ -1718,8 +1721,19 @@ void EntranceShuffler::ApplyEntranceOverrides() {
             continue;
         }
 
-        Entrance* entrance = entranceMap[entranceOverride.index];
-        Entrance* overrideEntrance = entranceMap[entranceOverride.override];
+        // Guard against indices that aren't present in entranceMap (e.g. a malformed override from
+        // slot data). operator[] would insert a null Entrance* and the Disconnect() below would
+        // crash; find() + skip lets us log and keep the rest of the overrides intact.
+        auto entranceIt = entranceMap.find(entranceOverride.index);
+        auto overrideIt = entranceMap.find(entranceOverride.override);
+        if (entranceIt == entranceMap.end() || overrideIt == entranceMap.end()) {
+            SPDLOG_ERROR("Skipping entrance override with unknown index: index {} override {}",
+                         entranceOverride.index, entranceOverride.override);
+            continue;
+        }
+
+        Entrance* entrance = entranceIt->second;
+        Entrance* overrideEntrance = overrideIt->second;
 
         entrance->Disconnect();
         entrance->Connect(overrideEntrance->GetOriginalConnectedRegionKey());
